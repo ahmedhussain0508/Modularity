@@ -167,7 +167,7 @@ def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None): # Added gamma param
                 D = bct.clustering.agreement(cis) / reps
 
     return np.squeeze(ciu + 1)
-
+# Netneurotools helper functions - start
 def _grid_communities(communities):
     """
     Generate boundaries of `communities`.
@@ -356,6 +356,7 @@ def plot_mod_heatmap(data, communities, *, inds=None, edgecolor='black',
         ax.set_yticklabels(labels_ind)
 
     return ax
+# Netneurotools helper functions - end
 
 data_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/non_residualized/SCH/control'
 output_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/Outputs/testing/louvain_non_resid/gamma_1_to_2'
