@@ -9,7 +9,8 @@ from sklearn.utils.validation import check_random_state
 import matplotlib.patches as patches
 from scipy.sparse.csgraph import minimum_spanning_tree
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score, adjusted_mutual_info_score
-
+from joblib import Parallel, delayed
+import random
 
 def find_consensus_2(assignments, null_func=np.mean, return_agreement=True,
                    gamma=1.0, seed=None): # Added gamma parameter with default value 1.0
@@ -167,7 +168,7 @@ def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None): # Added gamma param
                 D = bct.clustering.agreement(cis) / reps
 
     return np.squeeze(ciu + 1)
-# Netneurotools helper functions - start
+
 def _grid_communities(communities):
     """
     Generate boundaries of `communities`.
@@ -356,16 +357,18 @@ def plot_mod_heatmap(data, communities, *, inds=None, edgecolor='black',
         ax.set_yticklabels(labels_ind)
 
     return ax
-# Netneurotools helper functions - end
 
-data_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/non_residualized/SCH/control'
-output_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/Outputs/testing/louvain_non_resid/gamma_1_to_2'
+# data_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/non_residualized/SCH/control'
+# output_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/Outputs/testing/louvain_non_resid/gamma_1_to_2'
+
+data_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/control'
+output_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/results/testing'
 
 # Pre-determine array sizes
-n_subjects = 560
-n_runs = 300
+n_subjects = 5
+n_runs = 5
 
-def process_subject(subject_file, gamma, n_runs=n_runs, use_mst=True):
+def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True):
     # Load and prepare data
     data = np.load(os.path.join(data_dir, subject_file))
     data_clean = np.nan_to_num(data, nan=0)
@@ -377,39 +380,37 @@ def process_subject(subject_file, gamma, n_runs=n_runs, use_mst=True):
     if use_mst:
         # Apply MST to the nonnegative matrix
         mst_matrix = minimum_spanning_tree(nonegative*-1)*-1
-        mst_matrix = mst_matrix.toarray()  # Convert sparse matrix to dense array
-        # Ensure symmetry
+        mst_matrix = mst_matrix.toarray()
         mst_matrix = (mst_matrix + mst_matrix.T) / 2
         # Use MST matrix for community detection
         cis = []
         modularities = []
-        for _ in range(n_runs):
-            ci, q = bct.community_louvain(mst_matrix, gamma=gamma, seed=_) 
+        for run_idx in range(n_runs):
+            ci, q = bct.community_louvain(mst_matrix, gamma=gamma, seed=run_idx) 
             cis.append(ci)
             modularities.append(q)
-
     else:
         # Use original nonnegative matrix
         cis = []
         modularities = []
-        for _ in range(n_runs):
-            ci, q = bct.community_louvain(nonegative, gamma=gamma, seed=_) 
+        for run_idx in range(n_runs):
+            ci, q = bct.community_louvain(nonegative, gamma=gamma, seed=run_idx) 
             cis.append(ci)
             modularities.append(q)
 
-    # If you want to keep the agreement matrix
-    consensus_result = find_consensus_2(np.column_stack(cis), gamma=gamma, seed=_, return_agreement=True)
-    consensus_labels, agreement_matrix = consensus_result  # Unpack the tuple
+    # Use a consistent random seed for consensus
+    consensus_seed = random.randint(0, 10000)
+    consensus_result = find_consensus_2(np.column_stack(cis), gamma=gamma, seed=consensus_seed, return_agreement=True)
+    consensus_labels, agreement_matrix = consensus_result
             
     return consensus_labels, nonegative, cis, modularities
-
 
 # Process subjects using list comprehension
 subject_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.npy')])[:n_subjects]
 #conn_matrix = results[0][1]  # Get connectivity matrix from first subject
 # Gamma range
-gamma_range = np.array([i/10 for i in range(10, 21)])
-#gamma_range = np.array([i/10 for i in range(10, 12)]) # gamma = 1.0 & 1.1
+#gamma_range = np.array([i/10 for i in range(10, 21)])
+gamma_range = np.array([i/10 for i in range(10, 12)]) # gamma = 1.0 & 1.1
 n_gamma = len(gamma_range)
 
 # Initialize lists to store metrics
@@ -423,45 +424,43 @@ final_agreement_matrix_modularities = []
 # Data storage
 all_metrics = []
 
-
 for gamma in gamma_range:
-    print(f"Processing gamma = {gamma}")
+    print(f"\nProcessing gamma = {gamma}")
+    
+    # Create a gamma-specific output directory
+    gamma_output_dir = os.path.join(output_dir, f"gamma_{gamma:.4f}")
+    if not os.path.exists(gamma_output_dir):
+        os.makedirs(gamma_output_dir)
+    
+    # Process all subjects in parallel
+    results = Parallel(n_jobs=8, verbose=10)(
+        delayed(process_subject_parallel)(subject_file, gamma) 
+        for subject_file in subject_files
+    )
+    
+    # Unpack results
+    all_subject_consensus_partitions = []
+    all_conn_matrices = []
     all_subject_cis = []
     all_subject_modularities = []
-    all_subject_consensus_partitions = []
-    subject_consensus_partition_modularities = [] # Store modularity of each subject's consensus partition
-    results = [] # To store results for each subject to access conn_matrix later
-
-    for subject_file in subject_files:
-        consensus_partition, conn_matrix, cis, modularities = process_subject(subject_file, gamma, use_mst=True)
-        results.append((consensus_partition, conn_matrix, cis, modularities)) # Store results
+    subject_consensus_partition_modularities = []
+    
+    # Process results for each subject
+    for subject_idx, (consensus_partition, conn_matrix, cis, modularities) in enumerate(results):
+        all_subject_consensus_partitions.append(consensus_partition)
+        all_conn_matrices.append(conn_matrix)
         all_subject_cis.append(cis)
         all_subject_modularities.append(modularities)
-        all_subject_consensus_partitions.append(consensus_partition)
-        # Add a check to debug size mismatch
-        print(f"conn_matrix shape: {conn_matrix.shape}")
-        print(f"consensus_partition length: {len(consensus_partition)}")
-
-        # Only calculate if sizes match
-        if len(consensus_partition) == conn_matrix.shape[0]:
-            subject_consensus_modularity = bct.community_louvain(conn_matrix, gamma=gamma, ci=consensus_partition)[1]
-            subject_consensus_partition_modularities.append(subject_consensus_modularity)
-        else:
-            print(f"Size mismatch for subject {subject_file}! Skipping modularity calculation.")
-            # Append a placeholder or NaN value
-            subject_consensus_partition_modularities.append(float('nan'))
-        # Calculate modularity of subject's consensus partition
-        # Use the conn_matrix from the current subject, not from a previous run
+        
+        # Calculate modularity ONCE for this subject's consensus partition
         subject_consensus_modularity = bct.community_louvain(conn_matrix, gamma=gamma, ci=consensus_partition)[1]
         subject_consensus_partition_modularities.append(subject_consensus_modularity)
-
-
-    # Calculate average and std of consensus modularities
-    avg_consensus_modularities.append(np.mean(subject_consensus_partition_modularities))
-    std_consensus_modularities.append(np.std(subject_consensus_partition_modularities))
-
-
-    # Calculate NMI, ARI, AMI (same as before, between runs within each subject)
+    
+    # Calculate metrics
+    avg_consensus_modularity = np.mean(subject_consensus_partition_modularities)
+    std_consensus_modularity = np.std(subject_consensus_partition_modularities)
+    
+    # Calculate NMI, ARI, AMI between runs within each subject
     nmi_values = []
     ari_values = []
     ami_values = []
@@ -471,42 +470,36 @@ for gamma in gamma_range:
                 nmi_values.append(normalized_mutual_info_score(subject_cis[i], subject_cis[j]))
                 ari_values.append(adjusted_rand_score(subject_cis[i], subject_cis[j]))
                 ami_values.append(adjusted_mutual_info_score(subject_cis[i], subject_cis[j]))
-    avg_nmi.append(np.mean(nmi_values))
-    avg_ari.append(np.mean(ari_values))
-    avg_ami.append(np.mean(ami_values))
-
-    # Final consensus and Agreement Matrix using find_consensus_2
-    final_consensus, final_agreement_matrix = find_consensus_2(np.column_stack(all_subject_consensus_partitions), gamma=gamma) # Pass gamma here
-    final_agreement_modularity = bct.community_louvain(final_agreement_matrix, gamma=gamma)[1] # Modularity of final agreement matrix
-    final_agreement_matrix_modularities.append(final_agreement_modularity) # Append final agreement matrix modularity
+    
+    avg_nmi = np.mean(nmi_values)
+    avg_ari = np.mean(ari_values)
+    avg_ami = np.mean(ami_values)
+    
+    # Final consensus and Agreement Matrix
+    final_consensus, final_agreement_matrix = find_consensus_2(
+        np.column_stack(all_subject_consensus_partitions), 
+        gamma=gamma,
+        seed=random.randint(0, 10000)  # Consistent random seed
+    )
+    
+    # Calculate modularity of final agreement matrix
+    final_agreement_modularity = bct.community_louvain(final_agreement_matrix, gamma=gamma)[1]
     
     # Save the final agreement matrix
-    filename = os.path.join(output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy")
-    np.save(filename, final_agreement_matrix)
-    print(f"Saved agreement matrix for gamma = {gamma} to {filename}")
-
-    # Store metrics for saving
+    np.save(os.path.join(gamma_output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy"), final_agreement_matrix)
+    
+    # Store metrics
     all_metrics.append({
         'gamma': gamma,
-        'avg_consensus_modularity': avg_consensus_modularities[-1],
-        'std_consensus_modularity': std_consensus_modularities[-1],
-        'avg_nmi': avg_nmi[-1],
-        'avg_ari': avg_ari[-1],
-        'avg_ami': avg_ami[-1],
-        'final_agreement_matrix_modularity': final_agreement_matrix_modularities[-1]
+        'avg_consensus_modularity': avg_consensus_modularity,
+        'std_consensus_modularity': std_consensus_modularity,
+        'avg_nmi': avg_nmi,
+        'avg_ari': avg_ari,
+        'avg_ami': avg_ami,
+        'final_agreement_matrix_modularity': final_agreement_modularity
     })
-
-# Process each gamma value
-for gamma in gamma_range:
-    print(f"\nProcessing gamma = {gamma}")
     
-    # Create a gamma-specific output directory
-    gamma_output_dir = os.path.join(output_dir, f"gamma_{gamma:.4f}")
-    if not os.path.exists(gamma_output_dir):
-        os.makedirs(gamma_output_dir)
-    
-    # Get consensus partition for current gamma
-    final_consensus, final_agreement_matrix = find_consensus_2(np.column_stack(all_subject_consensus_partitions), gamma=gamma)
+    # === Second part: Additional analysis and visualization ===
     
     # Analyze community sizes
     unique_communities, community_sizes = np.unique(final_consensus, return_counts=True)
@@ -525,14 +518,14 @@ for gamma in gamma_range:
             f.write(f"Community {comm}: {size} members\n")
     
     # Read the node labels
-    node_labels = pd.read_csv('/mnt/munin/Morey/Lab/ahmed/cerebellum/data/SCH_region_order.csv', header=None)
+    node_labels = pd.read_csv('/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/region_mapping.csv', header=None)
     node_labels = node_labels[0].tolist()  
     
     # Create a DataFrame with node assignments
     partition_df = pd.DataFrame({
         'Node': node_labels,
         'Community': final_consensus,
-        'Gamma': gamma  # Include gamma value in the dataframe
+        'Gamma': gamma
     })
     
     # Save to CSV
@@ -547,20 +540,25 @@ for gamma in gamma_range:
             f.write("\n".join(f"  {node}" for node in nodes_in_comm))
             f.write("\n\n")
     
-    # Save agreement matrix
-    np.save(os.path.join(gamma_output_dir, f'agreement_matrix_gamma_{gamma:.4f}.npy'), final_agreement_matrix)
+    # Free memory before moving to next gamma
+    del all_subject_consensus_partitions, all_conn_matrices, all_subject_cis, all_subject_modularities
+    del subject_consensus_partition_modularities, nmi_values, ari_values, ami_values
 
 # Combined Modularity Plot
 fig_mod, ax_mod = plt.subplots(figsize=(10, 6))
-ax_mod.errorbar(gamma_range, avg_consensus_modularities, yerr=std_consensus_modularities, fmt='-o', label='Average Consensus Modularity')
-ax_mod.plot(gamma_range, final_agreement_matrix_modularities, '-o', label='Final Agreement Matrix Modularity')
+metrics_df = pd.DataFrame(all_metrics)
+ax_mod.errorbar(metrics_df['gamma'], metrics_df['avg_consensus_modularity'], 
+                yerr=metrics_df['std_consensus_modularity'], fmt='-o', 
+                label='Average Consensus Modularity')
+ax_mod.plot(metrics_df['gamma'], metrics_df['final_agreement_matrix_modularity'], 
+            '-o', label='Final Agreement Matrix Modularity')
 ax_mod.set_xlabel('Gamma')
 ax_mod.set_ylabel('Modularity')
 ax_mod.set_title('Modularity vs Gamma')
 ax_mod.grid(True)
 ax_mod.legend()
-fig_mod.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_combined_modularity.jpeg'), bbox_inches='tight')
-plt.close(fig_mod)
+fig_mod.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_combined_modularity.jpeg'), 
+                bbox_inches='tight')
 
 # Combined Similarity Indices Plot
 fig_sim, ax_sim = plt.subplots(figsize=(10, 6))
