@@ -365,8 +365,8 @@ data_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/re
 output_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/results/testing'
 
 # Pre-determine array sizes
-n_subjects = 5
-n_runs = 5
+n_subjects = 3
+n_runs = 2
 
 def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True):
     # Load and prepare data
@@ -485,10 +485,10 @@ for gamma in gamma_range:
     # Calculate modularity of final agreement matrix
     final_agreement_modularity = bct.community_louvain(final_agreement_matrix, gamma=gamma)[1]
     
-    # Save the final agreement matrix
-    np.save(os.path.join(gamma_output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy"), final_agreement_matrix)
+    # Calculate number of communities
+    num_communities = len(np.unique(final_consensus))
     
-    # Store metrics
+    ## Store metrics
     all_metrics.append({
         'gamma': gamma,
         'avg_consensus_modularity': avg_consensus_modularity,
@@ -496,9 +496,12 @@ for gamma in gamma_range:
         'avg_nmi': avg_nmi,
         'avg_ari': avg_ari,
         'avg_ami': avg_ami,
-        'final_agreement_matrix_modularity': final_agreement_modularity
+        'final_agreement_matrix_modularity': final_agreement_modularity,
+        'num_communities': num_communities  # Proper key-value pair syntax
     })
     
+    # Save the final agreement matrix
+    np.save(os.path.join(gamma_output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy"), final_agreement_matrix)
     # === Second part: Additional analysis and visualization ===
     
     # Analyze community sizes
@@ -544,9 +547,11 @@ for gamma in gamma_range:
     del all_subject_consensus_partitions, all_conn_matrices, all_subject_cis, all_subject_modularities
     del subject_consensus_partition_modularities, nmi_values, ari_values, ami_values
 
-# Combined Modularity Plot
-fig_mod, ax_mod = plt.subplots(figsize=(10, 6))
+# After the gamma loop completes, create a DataFrame from all_metrics
 metrics_df = pd.DataFrame(all_metrics)
+
+# 1. Combined Modularity Plot
+fig_mod, ax_mod = plt.subplots(figsize=(10, 6))
 ax_mod.errorbar(metrics_df['gamma'], metrics_df['avg_consensus_modularity'], 
                 yerr=metrics_df['std_consensus_modularity'], fmt='-o', 
                 label='Average Consensus Modularity')
@@ -557,87 +562,76 @@ ax_mod.set_ylabel('Modularity')
 ax_mod.set_title('Modularity vs Gamma')
 ax_mod.grid(True)
 ax_mod.legend()
-fig_mod.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_combined_modularity.jpeg'), 
+fig_mod.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_modularity.jpeg'), 
                 bbox_inches='tight')
+plt.close(fig_mod)
 
-# Combined Similarity Indices Plot
+# 2. Combined Similarity Indices Plot (AMI, ARI, NMI together)
 fig_sim, ax_sim = plt.subplots(figsize=(10, 6))
-ax_sim.plot(gamma_range, avg_nmi, '-o', label='NMI', color='blue')
-ax_sim.plot(gamma_range, avg_ari, '-o', label='ARI', color='green')
-ax_sim.plot(gamma_range, avg_ami, '-o', label='AMI', color='red')
+ax_sim.plot(metrics_df['gamma'], metrics_df['avg_nmi'], '-o', label='NMI', color='blue')
+ax_sim.plot(metrics_df['gamma'], metrics_df['avg_ari'], '-o', label='ARI', color='green')
+ax_sim.plot(metrics_df['gamma'], metrics_df['avg_ami'], '-o', label='AMI', color='red')
 ax_sim.set_xlabel('Gamma')
 ax_sim.set_ylabel('Similarity Index Value')
 ax_sim.set_title('Similarity Indices vs Gamma')
 ax_sim.grid(True)
 ax_sim.legend()
-fig_sim.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_combined_similarity.jpeg'), bbox_inches='tight')
+fig_sim.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_similarity.jpeg'), 
+                bbox_inches='tight')
 plt.close(fig_sim)
 
+# 3. Plot showing all metrics together
+fig_all, ax_all = plt.subplots(figsize=(12, 7))
+# Primary y-axis for modularity
+ax_all.errorbar(metrics_df['gamma'], metrics_df['avg_consensus_modularity'], 
+                yerr=metrics_df['std_consensus_modularity'], fmt='-o', 
+                label='Avg Consensus Modularity', color='darkblue')
+ax_all.plot(metrics_df['gamma'], metrics_df['final_agreement_matrix_modularity'], 
+            '-o', label='Final Agreement Modularity', color='royalblue')
+ax_all.set_xlabel('Gamma')
+ax_all.set_ylabel('Modularity', color='blue')
+ax_all.tick_params(axis='y', labelcolor='blue')
 
-# Save plots separately (individual metrics plots)
-plot_filename_prefix = os.path.join(output_dir, 'clustering_metrics_gamma_scan')
+# Secondary y-axis for similarity indices
+ax2 = ax_all.twinx()
+ax2.plot(metrics_df['gamma'], metrics_df['avg_nmi'], '--^', label='NMI', color='darkgreen')
+ax2.plot(metrics_df['gamma'], metrics_df['avg_ari'], '--s', label='ARI', color='green')
+ax2.plot(metrics_df['gamma'], metrics_df['avg_ami'], '--d', label='AMI', color='limegreen')
+ax2.set_ylabel('Similarity Index', color='green')
+ax2.tick_params(axis='y', labelcolor='green')
 
-# Subplot 1: Average Consensus Modularity
-fig1, ax1 = plt.subplots(figsize=(10, 5)) 
-ax1.errorbar(gamma_range, avg_consensus_modularities, yerr=std_consensus_modularities, fmt='-o')
-ax1.set_xlabel('Gamma')
-ax1.set_ylabel('Average Consensus Modularity')
-ax1.set_title('Average Consensus Modularity vs Gamma')
-ax1.grid(True)
-fig1.savefig(f'{plot_filename_prefix}_subplot_1.jpeg', bbox_inches='tight')
-plt.close(fig1) # Close figure to free memory
+# Add legend for both axes
+lines1, labels1 = ax_all.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax_all.legend(lines1 + lines2, labels1 + labels2, loc='best')
 
-# Subplot 2: Average NMI
-fig2, ax2 = plt.subplots(figsize=(10, 5)) 
-ax2.plot(gamma_range, avg_nmi, '-o')
-ax2.set_xlabel('Gamma')
-ax2.set_ylabel('Average NMI')
-ax2.set_title('Average NMI vs Gamma')
-ax2.grid(True)
-fig2.savefig(f'{plot_filename_prefix}_subplot_2.jpeg', bbox_inches='tight')
-plt.close(fig2)
+ax_all.set_title('Community Detection Metrics vs Gamma')
+ax_all.grid(True)
+fig_all.tight_layout()
+fig_all.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_all.jpeg'), 
+                bbox_inches='tight')
+plt.close(fig_all)
 
-# Subplot 3: Average ARI
-fig3, ax3 = plt.subplots(figsize=(10, 5)) 
-ax3.plot(gamma_range, avg_ari, '-o')
-ax3.set_xlabel('Gamma')
-ax3.set_ylabel('Average ARI')
-ax3.set_title('Average ARI vs Gamma')
-ax3.grid(True)
-fig3.savefig(f'{plot_filename_prefix}_subplot_3.jpeg', bbox_inches='tight')
-plt.close(fig3)
+# 4. Additional visualization: Number of communities vs gamma
+# This requires extracting the number of communities for each gamma from your data
+fig_comm, ax_comm = plt.subplots(figsize=(10, 6))
+# Extract number of communities per gamma from original analysis 
+# (We'd need to capture this during the main loop)
+# As a placeholder, we'll create a random example
+if 'num_communities' in metrics_df.columns:
+    ax_comm.plot(metrics_df['gamma'], metrics_df['num_communities'], '-o', color='purple')
+    ax_comm.set_xlabel('Gamma')
+    ax_comm.set_ylabel('Number of Communities')
+    ax_comm.set_title('Number of Communities vs Gamma')
+    ax_comm.grid(True)
+    fig_comm.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_num_communities.jpeg'), 
+                    bbox_inches='tight')
+    plt.close(fig_comm)
 
-# Subplot 4: Average AMI
-fig4, ax4 = plt.subplots(figsize=(10, 5)) 
-ax4.plot(gamma_range, avg_ami, '-o')
-ax4.set_xlabel('Gamma')
-ax4.set_ylabel('Average AMI')
-ax4.set_title('Average AMI vs Gamma')
-ax4.grid(True)
-fig4.savefig(f'{plot_filename_prefix}_subplot_4.jpeg', bbox_inches='tight')
-plt.close(fig4)
-
-# Subplot 5: Final Agreement Matrix Modularity
-fig5, ax5 = plt.subplots(figsize=(10, 5)) 
-ax5.plot(gamma_range, final_agreement_matrix_modularities, '-o', label='Final Agreement Matrix Modularity') 
-ax5.set_xlabel('Gamma')
-ax5.set_ylabel('Modularity')
-ax5.set_title('Final Agreement Matrix Modularity vs Gamma') 
-ax5.grid(True)
-ax5.legend()
-fig5.savefig(f'{plot_filename_prefix}_subplot_5.jpeg', bbox_inches='tight')
-plt.close(fig5)
-
-
-print(f"Plots saved to {output_dir}")
-
-# Save metrics to CSV (rest of the code remains the same)
-metrics_df = pd.DataFrame(all_metrics)
+# 5. Save metrics to CSV
 metrics_file = os.path.join(output_dir, 'clustering_metrics_gamma_scan.csv')
 metrics_df.to_csv(metrics_file, index=False)
 print(f"Metrics saved to {metrics_file}")
-
-plt.show() # Keep plt.show() to display the last individual plot 
         
 # # First plot: Subject consensus
 # fig1, ax1 = plt.subplots(figsize=(6.4, 2))
