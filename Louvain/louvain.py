@@ -11,7 +11,7 @@ import bct
 import random
 import time
 
-# Keep the original consensus functions intact but add performance enhancements
+# consensus functions 
 def find_consensus_2(assignments, null_func=np.mean, return_agreement=True,
                    gamma=1.0, seed=None):
     """
@@ -21,7 +21,6 @@ def find_consensus_2(assignments, null_func=np.mean, return_agreement=True,
     samp, comm = assignments.shape
 
     # Use vectorized operations for agreement matrix calculation
-    # This is much faster than the original implementation
     agreement = bct.clustering.agreement(assignments, buffsz=samp) / comm
 
     # Generate null agreement matrix more efficiently
@@ -68,8 +67,6 @@ def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None):
                 
                 for i, (ci, _) in enumerate(chunk_results):
                     cis[:, chunk_start + i] = ci
-            
-            # Use original unique_partitions function
             ciu = unique_partitions(cis)
             nu = np.size(ciu, axis=1)
             if nu > 1:
@@ -89,7 +86,6 @@ def unique_partitions(cis):
                 np.unique(cis[:, i], return_index=True)[1])):
             ci_tmp[np.where(cis[:, i] == cis[u, i])] = j
         cis[:, i] = ci_tmp
-        # so far no partitions have been deleted from ci
 
     # now squash any of the partitions that are completely identical
     # do not delete them from ci which needs to stay same size, so make
@@ -111,7 +107,7 @@ def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True, data
     if data_dir is None:
         raise ValueError("data_dir must be provided")
         
-    # Load and prepare data - no changes here
+    # Load and prepare data 
     data = np.load(os.path.join(data_dir, subject_file))
     data_clean = np.nan_to_num(data, nan=0)
     data_symmetric = (data_clean + data_clean.T) / 2
@@ -125,12 +121,9 @@ def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True, data
         matrix_for_community = mst_matrix
     else:
         matrix_for_community = nonegative
-
-    # Key optimization: run community_louvain in parallel chunks
     cis = []
     modularities = []
     
-    # Process in chunks for better efficiency
     chunk_size = 10  # Adjust based on your system
     for chunk_start in range(0, n_runs, chunk_size):
         chunk_end = min(chunk_start + chunk_size, n_runs)
@@ -146,8 +139,6 @@ def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True, data
         for ci, q in chunk_results:
             cis.append(ci)
             modularities.append(q)
-
-    # Use the original consensus function with the specified gamma
     consensus_seed = random.randint(0, 10000)
     consensus_result = find_consensus_2(
         np.column_stack(cis), 
@@ -208,9 +199,7 @@ def optimize_louvain_processing(data_dir, output_dir, gamma_range, n_subjects=No
                 subject_file, gamma, n_runs=n_runs, data_dir=data_dir
             ) for subject_file in subject_files
         )
-        
-        # Unpack results - same as original code
-        all_subject_consensus_partitions = []
+                all_subject_consensus_partitions = []
         all_conn_matrices = []
         all_subject_cis = []
         all_subject_modularities = []
@@ -225,7 +214,7 @@ def optimize_louvain_processing(data_dir, output_dir, gamma_range, n_subjects=No
             subject_consensus_modularity = bct.community_louvain(conn_matrix, gamma=gamma, ci=consensus_partition)[1]
             subject_consensus_partition_modularities.append(subject_consensus_modularity)
         
-        # Calculate metrics - same as original
+        # Calculate metrics
         avg_consensus_modularity = np.mean(subject_consensus_partition_modularities)
         std_consensus_modularity = np.std(subject_consensus_partition_modularities)
         
@@ -416,11 +405,7 @@ fig_all.savefig(os.path.join(output_dir, 'clustering_metrics_gamma_scan_all.jpeg
 plt.close(fig_all)
 
 # 4. Additional visualization: Number of communities vs gamma
-# This requires extracting the number of communities for each gamma from your data
 fig_comm, ax_comm = plt.subplots(figsize=(10, 6))
-# Extract number of communities per gamma from original analysis 
-# (We'd need to capture this during the main loop)
-# As a placeholder, we'll create a random example
 if 'num_communities' in metrics_df.columns:
     ax_comm.plot(metrics_df['gamma'], metrics_df['num_communities'], '-o', color='purple')
     ax_comm.set_xlabel('Gamma')
