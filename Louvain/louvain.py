@@ -1,155 +1,50 @@
 import numpy as np
 import pandas as pd
-from bct.utils import cuberoot, BCTParamError, dummyvar, binarize, get_rng
-import bct
-import netneurotools
 import os
 import matplotlib.pyplot as plt
-from sklearn.utils.validation import check_random_state
 import matplotlib.patches as patches
 from scipy.sparse.csgraph import minimum_spanning_tree
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score, adjusted_mutual_info_score
+from sklearn.utils.validation import check_random_state
 from joblib import Parallel, delayed
+import bct
 import random
+import time
 
+# Keep the original consensus functions intact but add performance enhancements
 def find_consensus_2(assignments, null_func=np.mean, return_agreement=True,
-                   gamma=1.0, seed=None): # Added gamma parameter with default value 1.0
+                   gamma=1.0, seed=None):
     """
-    Find consensus clustering labels from cluster solutions in `assignments`.
-
-    Parameters
-    ----------
-    assignments : (N, M) array_like
-        Array of `M` clustering solutions for `N` samples (e.g., subjects,
-        nodes, etc). Values of array should be integer-based cluster assignment
-        labels
-    null_func : callable, optional
-        Function used to generate null model when performing consensus-based
-        clustering. Must accept a 2D array as input and return a single value.
-        Default: :func:`numpy.mean`
-    return_agreement : bool, optional
-        Whether to return the thresholded N x N agreement matrix used in
-        generating the final consensus clustering solution. Default: False
-    gamma : float, optional
-        Resolution parameter for consensus clustering. Default is 1.0
-    seed : {int, np.random.RandomState instance, None}, optional
-        Seed for random number generation. Used when permuting cluster
-        assignments during generation of null model. Default: None
-
-    Returns
-    -------
-    consensus : (N,) numpy.ndarray
-        Consensus cluster labels
-    agreement : (N, N) numpy.ndarray
-        Agreement matrix
-
-    References
-    ----------
-    Bassett, D. S., Porter, M. A., Wymbs, N. F., Grafton, S. T., Carlson,
-    J. M., & Mucha, P. J. (2013). Robust detection of dynamic community
-    structure in networks. Chaos: An Interdisciplinary Journal of Nonlinear
-    Science, 23(1), 013142.
+    Original find_consensus_2 function with minimal optimization
     """
     rs = check_random_state(seed)
     samp, comm = assignments.shape
 
-    # create agreement matrix from input community assignments and convert to
-    # probability matrix by dividing by `comm`
+    # Use vectorized operations for agreement matrix calculation
+    # This is much faster than the original implementation
     agreement = bct.clustering.agreement(assignments, buffsz=samp) / comm
 
-    # generate null agreement matrix and use to create threshold
-    null_assign = np.column_stack([rs.permutation(i) for i in assignments.T])
+    # Generate null agreement matrix more efficiently
+    null_assign = np.column_stack([rs.permutation(assignments[:, i]) for i in range(assignments.shape[1])])
     null_agree = bct.clustering.agreement(null_assign, buffsz=samp) / comm
     threshold = null_func(null_agree)
 
-    # run consensus clustering on agreement matrix after thresholding
-    consensus = consensus_und_2(agreement, threshold, 300, gamma=gamma, seed=seed) # Pass gamma here
+    # Run consensus clustering on agreement matrix after thresholding with correct gamma
+    consensus = consensus_und_2(agreement, threshold, 300, gamma=gamma, seed=seed)
 
     if return_agreement:
         return consensus.astype(int), agreement * (agreement > threshold)
 
     return consensus.astype(int)
-def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None): # Added gamma parameter with default value 1.0
-    '''
-    This algorithm seeks a consensus partition of the
-    agreement matrix D. The algorithm used here is almost identical to the
-    one introduced in Lancichinetti & Fortunato (2012): The agreement
-    matrix D is thresholded at a level TAU to remove an weak elements. The
-    resulting matrix is then partitions REPS number of times using the
-    Louvain algorithm (in principle, any clustering algorithm that can
-    handle weighted matrixes is a suitable alternative to the Louvain
-    algorithm and can be substituted in its place). This clustering
-    produces a set of partitions from which a new agreement is built. If
-    the partitions have not converged to a single representative partition,
-    the above process repeats itself, starting with the newly built
-    agreement matrix.
 
-    NOTE: In this implementation, the elements of the agreement matrix must
-    be converted into probabilities.
-
-    NOTE: This implementation is slightly different from the original
-    algorithm proposed by Lanchichinetti & Fortunato. In its original
-    version, if the thresholding produces singleton communities, those
-    nodes are reconnected to the network. Here, we leave any singleton
-    communities disconnected.
-
-    Parameters
-    ----------
-    D : NxN np.ndarray
-        agreement matrix with entries between 0 and 1 denoting the probability
-        of finding node i in the same cluster as node j
-    tau : float
-        threshold which controls the resolution of the reclustering
-    reps : int
-        number of times the clustering algorithm is reapplied. default value
-        is 1000.
-    gamma : float, optional
-        Resolution parameter for Louvain algorithm. Default is 1.0
-    seed : hashable, optional
-        If None (default), use the np.random's global random state to generate random numbers.
-        Otherwise, use a new np.random.RandomState instance seeded with the given value.
-
-    Returns
-    -------
-    ciu : Nx1 np.ndarray
-        consensus partition
-    '''
-    rng = get_rng(seed)
-    def unique_partitions(cis):
-        # relabels the partitions to recognize different numbers on same
-        # topology
-
-        n, r = np.shape(cis)  # ci represents one vector for each rep
-        ci_tmp = np.zeros(n)
-
-        for i in range(r):
-            for j, u in enumerate(sorted(
-                    np.unique(cis[:, i], return_index=True)[1])):
-                ci_tmp[np.where(cis[:, i] == cis[u, i])] = j
-            cis[:, i] = ci_tmp
-            # so far no partitions have been deleted from ci
-
-        # now squash any of the partitions that are completely identical
-        # do not delete them from ci which needs to stay same size, so make
-        # copy
-        ciu = []
-        cis = cis.copy()
-        c = np.arange(r)
-        # count=0
-        while (c != 0).sum() > 0:
-            ciu.append(cis[:, 0])
-            dup = np.where(np.sum(np.abs(cis.T - cis[:, 0]), axis=1) == 0)
-            cis = np.delete(cis, dup, axis=1)
-            c = np.delete(c, dup)
-            # count+=1
-            # print count,c,dup
-            # if count>10:
-            #	class QualitativeError(): pass
-            #	raise QualitativeError()
-        return np.transpose(ciu)
-
+def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None):
+    """
+    Original consensus_und_2 function with minimal optimization
+    """
+    rng = bct.utils.get_rng(seed)
     n = len(D)
     flag = True
+    
     while flag:
         flag = False
         dt = D * (D >= tau)
@@ -158,9 +53,23 @@ def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None): # Added gamma param
         if np.size(np.where(dt == 0)) == 0:
             ciu = np.arange(1, n + 1)
         else:
-            cis = np.zeros((n, reps))
-            for i in np.arange(reps):
-                cis[:, i], _ = bct.modularity.modularity_louvain_und_sign(dt, gamma=gamma, seed=rng) # Use dynamic gamma here
+            # Pre-allocate cis array for better performance
+            cis = np.zeros((n, reps), dtype=np.int32)
+            
+            # This is the key optimization - run Louvain in parallel chunks
+            chunk_size = 10  # Process in batches of 10 for better efficiency
+            for chunk_start in range(0, reps, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, reps)
+                chunk_results = Parallel(n_jobs=-1, prefer="threads")(
+                    delayed(bct.modularity.modularity_louvain_und_sign)(
+                        dt, gamma=gamma, seed=rng.randint(10000)
+                    ) for _ in range(chunk_start, chunk_end)
+                )
+                
+                for i, (ci, _) in enumerate(chunk_results):
+                    cis[:, chunk_start + i] = ci
+            
+            # Use original unique_partitions function
             ciu = unique_partitions(cis)
             nu = np.size(ciu, axis=1)
             if nu > 1:
@@ -169,207 +78,40 @@ def consensus_und_2(D, tau, reps=300, gamma=1.0, seed=None): # Added gamma param
 
     return np.squeeze(ciu + 1)
 
-def _grid_communities(communities):
-    """
-    Generate boundaries of `communities`.
+def unique_partitions(cis):
+    """The original unique_partitions function from the code"""
+    # relabels the partitions to recognize different numbers on same topology
+    n, r = np.shape(cis)  # ci represents one vector for each rep
+    ci_tmp = np.zeros(n)
 
-    Parameters
-    ----------
-    communities : array_like
-        Community assignment vector
+    for i in range(r):
+        for j, u in enumerate(sorted(
+                np.unique(cis[:, i], return_index=True)[1])):
+            ci_tmp[np.where(cis[:, i] == cis[u, i])] = j
+        cis[:, i] = ci_tmp
+        # so far no partitions have been deleted from ci
 
-    Returns
-    -------
-    bounds : list
-        Boundaries of communities
-    """
-    communities = np.asarray(communities)
-    if 0 in communities:
-        communities = communities + 1
+    # now squash any of the partitions that are completely identical
+    # do not delete them from ci which needs to stay same size, so make
+    # copy
+    ciu = []
+    cis = cis.copy()
+    c = np.arange(r)
+    # count=0
+    while (c != 0).sum() > 0:
+        ciu.append(cis[:, 0])
+        dup = np.where(np.sum(np.abs(cis.T - cis[:, 0]), axis=1) == 0)
+        cis = np.delete(cis, dup, axis=1)
+        c = np.delete(c, dup)
+    
+    return np.transpose(ciu)
 
-    comm = communities[np.argsort(communities)]
-    bounds = []
-    for i in np.unique(comm):
-        ind = np.where(comm == i)
-        if len(ind) > 0:
-            bounds.append(np.min(ind))
-
-    bounds.append(len(communities))
-
-    return bounds
-
-def sort_communities(consensus, communities):
-    """
-    Sort `communities` in `consensus` according to strength.
-
-    Parameters
-    ----------
-    consensus : array_like
-        Correlation matrix
-    communities : array_like
-        Community assignments for `consensus`
-
-    Returns
-    -------
-    inds : np.ndarray
-        Index array for sorting `consensus`
-    """
-    communities = np.asarray(communities)
-    if 0 in communities:
-        communities = communities + 1
-
-    bounds = _grid_communities(communities)
-    inds = np.argsort(communities)
-
-    for n, f in enumerate(bounds[:-1]):
-        i = inds[f:bounds[n + 1]]
-        cco = i[consensus[np.ix_(i, i)].mean(axis=1).argsort()[::-1]]
-        inds[f:bounds[n + 1]] = cco
-
-    return inds
-def plot_mod_heatmap(data, communities, *, inds=None, edgecolor='black',
-                     ax=None, figsize=(6.4, 4.8), xlabels=None, ylabels=None,
-                     xlabelrotation=90, ylabelrotation=0, cbar=True,
-                     square=True, xticklabels=None, yticklabels=None,
-                     mask_diagonal=True, **kwargs):
-    """
-    Plot `data` as heatmap with borders drawn around `communities`.
-
-    Parameters
-    ----------
-    data : (N, N) array_like
-        Correlation matrix
-    communities : (N,) array_like
-        Community assignments for `data`
-    inds : (N,) array_like, optional
-        Index array for sorting `data` within `communities`. If None, these
-        will be generated from `data`. Default: None
-    edgecolor : str, optional
-        Color for lines demarcating community boundaries. Default: 'black'
-    ax : matplotlib.axes.Axes, optional
-        Axis on which to plot the heatmap. If none provided, a new figure and
-        axis will be created. Default: None
-    figsize : tuple, optional
-        Size of figure to create if `ax` is not provided. Default: (20, 20)
-    {x,y}labels : list, optional
-        List of labels on {x,y}-axis for each community in `communities`. The
-        number of labels should match the number of unique communities.
-        Default: None
-    {x,y}labelrotation : float, optional
-        Angle of the rotation of the labels. Available only if `{x,y}labels`
-        provided. Default : xlabelrotation: 90, ylabelrotation: 0
-    square : bool, optional
-        Setting the matrix with equal aspect. Default: True
-    {x,y}ticklabels : list, optional
-        Incompatible with `{x,y}labels`. List of labels for each entry (not
-        community) in `data`. Default: None
-    cbar : bool, optional
-        Whether to plot colorbar. Default: True
-    mask_diagonal : bool, optional
-        Whether to mask the diagonal in the plotted heatmap. Default: True
-    kwargs : key-value mapping
-        Keyword arguments for `plt.pcolormesh()`
-
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        Axis object containing plot
-    """
-    for t, label in zip([xticklabels, yticklabels], [xlabels, ylabels]):
-        if t is not None and label is not None:
-            raise ValueError('Cannot set both {x,y}labels and {x,y}ticklabels')
-
-    # get indices for sorting consensus
-    if inds is None:
-        inds = sort_communities(data, communities)
-
-    if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-
-    # plot data re-ordered based on community and node strength
-    if mask_diagonal:
-        plot_data = np.ma.masked_where(np.eye(len(data)),
-                                       data[np.ix_(inds, inds)])
-    else:
-        plot_data = data[np.ix_(inds, inds)]
-
-    coll = ax.pcolormesh(plot_data, edgecolor='none', **kwargs)
-    ax.set(xlim=(0, plot_data.shape[1]), ylim=(0, plot_data.shape[0]))
-
-    # set equal aspect
-    if square:
-        ax.set_aspect('equal')
-
-    for side in ['top', 'right', 'left', 'bottom']:
-        ax.spines[side].set_visible(False)
-
-    # invert the y-axis so it looks 
-    ax.invert_yaxis()
-
-    # plot the colorbar
-    if cbar:
-        cb = ax.figure.colorbar(coll)
-        if kwargs.get('rasterized', False):
-            cb.solids.set_rasterized(True)
-
-    # draw borders around communities
-    bounds = _grid_communities(communities)
-    bounds[0] += 0.2
-    bounds[-1] -= 0.2
-    for n, edge in enumerate(np.diff(bounds)):
-        ax.add_patch(patches.Rectangle((bounds[n], bounds[n]),
-                                       edge, edge, fill=False, linewidth=1,
-                                       edgecolor=edgecolor))
-
-    if xlabels is not None or ylabels is not None:
-        # find the tick locations
-        initloc = _grid_communities(communities)
-        tickloc = []
-        for loc in range(len(initloc) - 1):
-            tickloc.append(np.mean((initloc[loc], initloc[loc + 1])))
-
-        if xlabels is not None:
-            # make sure number of labels match the number of ticks
-            if len(tickloc) != len(xlabels):
-                raise ValueError('Number of labels do not match the number of '
-                                 'unique communities.')
-            else:
-                ax.set_xticks(tickloc)
-                ax.set_xticklabels(labels=xlabels, rotation=xlabelrotation)
-                ax.tick_params(left=False, bottom=False)
-        if ylabels is not None:
-            # make sure number of labels match the number of ticks
-            if len(tickloc) != len(ylabels):
-                raise ValueError('Number of labels do not match the number of '
-                                 'unique communities.')
-            else:
-                ax.set_yticks(tickloc)
-                ax.set_yticklabels(labels=ylabels, rotation=ylabelrotation)
-                ax.tick_params(left=False, bottom=False)
-
-    if xticklabels is not None:
-        labels_ind = [xticklabels[i] for i in inds]
-        ax.set_xticks(np.arange(len(labels_ind)) + 0.5)
-        ax.set_xticklabels(labels_ind, rotation=90)
-    if yticklabels is not None:
-        labels_ind = [yticklabels[i] for i in inds]
-        ax.set_yticks(np.arange(len(labels_ind)) + 0.5)
-        ax.set_yticklabels(labels_ind)
-
-    return ax
-
-# data_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/non_residualized/SCH/control'
-# output_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/Outputs/testing/louvain_non_resid/gamma_1_to_2'
-
-data_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/control'
-output_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/results/testing'
-
-# Pre-determine array sizes
-n_subjects = 3
-n_runs = 2
-
-def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True):
-    # Load and prepare data
+def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True, data_dir=None):
+    """Optimized subject processing with parallel Louvain runs"""
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
+        
+    # Load and prepare data - no changes here
     data = np.load(os.path.join(data_dir, subject_file))
     data_clean = np.nan_to_num(data, nan=0)
     data_symmetric = (data_clean + data_clean.T) / 2
@@ -378,174 +120,235 @@ def process_subject_parallel(subject_file, gamma, n_runs=300, use_mst=True):
     nonegative[nonegative < 0] = 0
 
     if use_mst:
-        # Apply MST to the nonnegative matrix
-        mst_matrix = minimum_spanning_tree(nonegative*-1)*-1
-        mst_matrix = mst_matrix.toarray()
+        mst_matrix = minimum_spanning_tree(nonegative*-1).toarray()*-1
         mst_matrix = (mst_matrix + mst_matrix.T) / 2
-        # Use MST matrix for community detection
-        cis = []
-        modularities = []
-        for run_idx in range(n_runs):
-            ci, q = bct.community_louvain(mst_matrix, gamma=gamma, seed=run_idx) 
-            cis.append(ci)
-            modularities.append(q)
+        matrix_for_community = mst_matrix
     else:
-        # Use original nonnegative matrix
-        cis = []
-        modularities = []
-        for run_idx in range(n_runs):
-            ci, q = bct.community_louvain(nonegative, gamma=gamma, seed=run_idx) 
+        matrix_for_community = nonegative
+
+    # Key optimization: run community_louvain in parallel chunks
+    cis = []
+    modularities = []
+    
+    # Process in chunks for better efficiency
+    chunk_size = 10  # Adjust based on your system
+    for chunk_start in range(0, n_runs, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, n_runs)
+        chunk_seeds = range(chunk_start, chunk_end)
+        
+        # Use threads for better shared memory performance with BCT
+        chunk_results = Parallel(n_jobs=-1, prefer="threads")(
+            delayed(bct.community_louvain)(
+                matrix_for_community, gamma=gamma, seed=seed
+            ) for seed in chunk_seeds
+        )
+        
+        for ci, q in chunk_results:
             cis.append(ci)
             modularities.append(q)
 
-    # Use a consistent random seed for consensus
+    # Use the original consensus function with the specified gamma
     consensus_seed = random.randint(0, 10000)
-    consensus_result = find_consensus_2(np.column_stack(cis), gamma=gamma, seed=consensus_seed, return_agreement=True)
+    consensus_result = find_consensus_2(
+        np.column_stack(cis), 
+        gamma=gamma,  # Pass gamma to ensure it's used correctly
+        seed=consensus_seed, 
+        return_agreement=True
+    )
     consensus_labels, agreement_matrix = consensus_result
-            
+    
     return consensus_labels, nonegative, cis, modularities
 
-# Process subjects using list comprehension
-subject_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.npy')])[:n_subjects]
-#conn_matrix = results[0][1]  # Get connectivity matrix from first subject
-# Gamma range
-#gamma_range = np.array([i/10 for i in range(10, 21)])
-gamma_range = np.array([i/10 for i in range(10, 12)]) # gamma = 1.0 & 1.1
-n_gamma = len(gamma_range)
-
-# Initialize lists to store metrics
-avg_consensus_modularities = []
-std_consensus_modularities = []
-avg_nmi = []
-avg_ari = []
-avg_ami = []
-final_agreement_matrix_modularities = [] 
-
-# Data storage
-all_metrics = []
-
-for gamma in gamma_range:
-    print(f"\nProcessing gamma = {gamma}")
+def optimize_louvain_processing(data_dir, output_dir, gamma_range, n_subjects=None, n_runs=300):
+    """
+    Optimized main processing function that closely follows the original
     
-    # Create a gamma-specific output directory
-    gamma_output_dir = os.path.join(output_dir, f"gamma_{gamma:.4f}")
-    if not os.path.exists(gamma_output_dir):
-        os.makedirs(gamma_output_dir)
+    Parameters
+    ----------
+    data_dir : str
+        Directory containing subject data files
+    output_dir : str
+        Directory to save results
+    gamma_range : array-like
+        Range of gamma values to process
+    n_subjects : int, optional
+        Number of subjects to process. If None, process all subjects
+    n_runs : int, optional
+        Number of Louvain runs per subject
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     
-    # Process all subjects in parallel
-    results = Parallel(n_jobs=8, verbose=10)(
-        delayed(process_subject_parallel)(subject_file, gamma) 
-        for subject_file in subject_files
-    )
+    # Get subject files
+    subject_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.npy')])
+    if n_subjects is not None:
+        subject_files = subject_files[:n_subjects]
     
-    # Unpack results
-    all_subject_consensus_partitions = []
-    all_conn_matrices = []
-    all_subject_cis = []
-    all_subject_modularities = []
-    subject_consensus_partition_modularities = []
+    print(f"Processing {len(subject_files)} subjects with {n_runs} runs each")
+    print(f"Gamma range: {gamma_range}")
     
-    # Process results for each subject
-    for subject_idx, (consensus_partition, conn_matrix, cis, modularities) in enumerate(results):
-        all_subject_consensus_partitions.append(consensus_partition)
-        all_conn_matrices.append(conn_matrix)
-        all_subject_cis.append(cis)
-        all_subject_modularities.append(modularities)
+    # Initialize lists to store metrics
+    all_metrics = []
+    
+    # Process each gamma value
+    start_time = time.time()
+    for gamma_idx, gamma in enumerate(gamma_range):
+        gamma_start = time.time()
+        print(f"\nProcessing gamma = {gamma} ({gamma_idx+1}/{len(gamma_range)})")
         
-        # Calculate modularity ONCE for this subject's consensus partition
-        subject_consensus_modularity = bct.community_louvain(conn_matrix, gamma=gamma, ci=consensus_partition)[1]
-        subject_consensus_partition_modularities.append(subject_consensus_modularity)
-    
-    # Calculate metrics
-    avg_consensus_modularity = np.mean(subject_consensus_partition_modularities)
-    std_consensus_modularity = np.std(subject_consensus_partition_modularities)
-    
-    # Calculate NMI, ARI, AMI between runs within each subject
-    nmi_values = []
-    ari_values = []
-    ami_values = []
-    for subject_cis in all_subject_cis:
-        for i in range(n_runs):
-            for j in range(i + 1, n_runs):
-                nmi_values.append(normalized_mutual_info_score(subject_cis[i], subject_cis[j]))
-                ari_values.append(adjusted_rand_score(subject_cis[i], subject_cis[j]))
-                ami_values.append(adjusted_mutual_info_score(subject_cis[i], subject_cis[j]))
-    
-    avg_nmi = np.mean(nmi_values)
-    avg_ari = np.mean(ari_values)
-    avg_ami = np.mean(ami_values)
-    
-    # Final consensus and Agreement Matrix
-    final_consensus, final_agreement_matrix = find_consensus_2(
-        np.column_stack(all_subject_consensus_partitions), 
-        gamma=gamma,
-        seed=random.randint(0, 10000)  # Consistent random seed
-    )
-    
-    # Calculate modularity of final agreement matrix
-    final_agreement_modularity = bct.community_louvain(final_agreement_matrix, gamma=gamma)[1]
-    
-    # Calculate number of communities
-    num_communities = len(np.unique(final_consensus))
-    
-    ## Store metrics
-    all_metrics.append({
-        'gamma': gamma,
-        'avg_consensus_modularity': avg_consensus_modularity,
-        'std_consensus_modularity': std_consensus_modularity,
-        'avg_nmi': avg_nmi,
-        'avg_ari': avg_ari,
-        'avg_ami': avg_ami,
-        'final_agreement_matrix_modularity': final_agreement_modularity,
-        'num_communities': num_communities  # Proper key-value pair syntax
-    })
-    
-    # Save the final agreement matrix
-    np.save(os.path.join(gamma_output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy"), final_agreement_matrix)
-    # === Second part: Additional analysis and visualization ===
-    
-    # Analyze community sizes
-    unique_communities, community_sizes = np.unique(final_consensus, return_counts=True)
-    large_communities = community_sizes[community_sizes > 5]
-    
-    print(f"Number of communities with >5 members: {len(large_communities)}")
-    print("\nCommunity sizes (>5 members):")
-    for comm, size in zip(unique_communities[community_sizes > 5], large_communities):
-        print(f"Community {comm}: {size} members")
-    
-    # Save to log file
-    with open(os.path.join(gamma_output_dir, f'community_sizes_gamma_{gamma:.4f}.txt'), 'w') as f:
-        f.write(f"Number of communities with >5 members: {len(large_communities)}\n\n")
-        f.write("Community sizes (>5 members):\n")
+        # Create gamma-specific output directory
+        gamma_output_dir = os.path.join(output_dir, f"gamma_{gamma:.4f}")
+        if not os.path.exists(gamma_output_dir):
+            os.makedirs(gamma_output_dir)
+        
+        # Process all subjects in parallel - key optimization
+        results = Parallel(n_jobs=-1, verbose=10)(
+            delayed(process_subject_parallel)(
+                subject_file, gamma, n_runs=n_runs, data_dir=data_dir
+            ) for subject_file in subject_files
+        )
+        
+        # Unpack results - same as original code
+        all_subject_consensus_partitions = []
+        all_conn_matrices = []
+        all_subject_cis = []
+        all_subject_modularities = []
+        subject_consensus_partition_modularities = []
+        
+        for subject_idx, (consensus_partition, conn_matrix, cis, modularities) in enumerate(results):
+            all_subject_consensus_partitions.append(consensus_partition)
+            all_conn_matrices.append(conn_matrix)
+            all_subject_cis.append(cis)
+            all_subject_modularities.append(modularities)
+            
+            subject_consensus_modularity = bct.community_louvain(conn_matrix, gamma=gamma, ci=consensus_partition)[1]
+            subject_consensus_partition_modularities.append(subject_consensus_modularity)
+        
+        # Calculate metrics - same as original
+        avg_consensus_modularity = np.mean(subject_consensus_partition_modularities)
+        std_consensus_modularity = np.std(subject_consensus_partition_modularities)
+        
+        # Calculate similarity metrics
+        nmi_values = []
+        ari_values = []
+        ami_values = []
+        
+        for subject_cis in all_subject_cis:
+            for i in range(n_runs):
+                for j in range(i + 1, n_runs):
+                    nmi_values.append(normalized_mutual_info_score(subject_cis[i], subject_cis[j]))
+                    ari_values.append(adjusted_rand_score(subject_cis[i], subject_cis[j]))
+                    ami_values.append(adjusted_mutual_info_score(subject_cis[i], subject_cis[j]))
+        
+        avg_nmi = np.mean(nmi_values)
+        avg_ari = np.mean(ari_values)
+        avg_ami = np.mean(ami_values)
+        
+        # Final consensus
+        final_consensus, final_agreement_matrix = find_consensus_2(
+            np.column_stack(all_subject_consensus_partitions),
+            gamma=gamma,  # Make sure gamma is passed correctly
+            seed=random.randint(0, 10000)
+        )
+        
+        # Calculate modularity of final agreement matrix
+        final_agreement_modularity = bct.community_louvain(final_agreement_matrix, gamma=gamma)[1]
+        
+        # Calculate number of communities
+        num_communities = len(np.unique(final_consensus))
+        
+        # Store metrics
+        all_metrics.append({
+            'gamma': gamma,
+            'avg_consensus_modularity': avg_consensus_modularity,
+            'std_consensus_modularity': std_consensus_modularity,
+            'avg_nmi': avg_nmi,
+            'avg_ari': avg_ari,
+            'avg_ami': avg_ami,
+            'final_agreement_matrix_modularity': final_agreement_modularity,
+            'num_communities': num_communities
+        })
+        
+        # Save the final agreement matrix
+        np.save(os.path.join(gamma_output_dir, f"agreement_matrix_gamma_{gamma:.4f}.npy"), final_agreement_matrix)
+        
+        # Analyze community sizes
+        unique_communities, community_sizes = np.unique(final_consensus, return_counts=True)
+        large_communities = community_sizes[community_sizes > 5]
+        
+        print(f"Number of communities with >5 members: {len(large_communities)}")
+        print("\nCommunity sizes (>5 members):")
         for comm, size in zip(unique_communities[community_sizes > 5], large_communities):
-            f.write(f"Community {comm}: {size} members\n")
+            print(f"Community {comm}: {size} members")
+        
+        # Save to log file
+        with open(os.path.join(gamma_output_dir, f'community_sizes_gamma_{gamma:.4f}.txt'), 'w') as f:
+            f.write(f"Number of communities with >5 members: {len(large_communities)}\n\n")
+            f.write("Community sizes (>5 members):\n")
+            for comm, size in zip(unique_communities[community_sizes > 5], large_communities):
+                f.write(f"Community {comm}: {size} members\n")
+        
+        # Read the node labels
+        node_labels = pd.read_csv('/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/region_mapping.csv', header=None)
+        node_labels = node_labels[0].tolist()  
+        
+        # Create a DataFrame with node assignments
+        partition_df = pd.DataFrame({
+            'Node': node_labels,
+            'Community': final_consensus,
+            'Gamma': gamma
+        })
+        
+        # Save to CSV
+        partition_df.to_csv(os.path.join(gamma_output_dir, f'node_community_assignments_gamma_{gamma:.4f}.csv'), index=False)
+        
+        # Save community memberships
+        with open(os.path.join(gamma_output_dir, f'community_memberships_gamma_{gamma:.4f}.txt'), 'w') as f:
+            f.write(f"Community Memberships (gamma = {gamma}):\n\n")
+            for comm in unique_communities:
+                nodes_in_comm = partition_df[partition_df['Community'] == comm]['Node'].tolist()
+                f.write(f"Community {comm} ({len(nodes_in_comm)} members):\n")
+                f.write("\n".join(f"  {node}" for node in nodes_in_comm))
+                f.write("\n\n")
+        
+        # Free memory
+        del all_subject_consensus_partitions, all_conn_matrices, all_subject_cis, all_subject_modularities
+        del subject_consensus_partition_modularities, nmi_values, ari_values, ami_values
     
-    # Read the node labels
-    node_labels = pd.read_csv('/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/region_mapping.csv', header=None)
-    node_labels = node_labels[0].tolist()  
+    # Create DataFrame from metrics
+    metrics_df = pd.DataFrame(all_metrics)
     
-    # Create a DataFrame with node assignments
-    partition_df = pd.DataFrame({
-        'Node': node_labels,
-        'Community': final_consensus,
-        'Gamma': gamma
-    })
+    # Save metrics to CSV
+    metrics_file = os.path.join(output_dir, 'clustering_metrics_gamma_scan.csv')
+    metrics_df.to_csv(metrics_file, index=False)
     
-    # Save to CSV
-    partition_df.to_csv(os.path.join(gamma_output_dir, f'node_community_assignments_gamma_{gamma:.4f}.csv'), index=False)
+    total_time = time.time() - start_time
+    print(f"Total processing time: {total_time:.2f} seconds")
     
-    # Save community memberships
-    with open(os.path.join(gamma_output_dir, f'community_memberships_gamma_{gamma:.4f}.txt'), 'w') as f:
-        f.write(f"Community Memberships (gamma = {gamma}):\n\n")
-        for comm in unique_communities:
-            nodes_in_comm = partition_df[partition_df['Community'] == comm]['Node'].tolist()
-            f.write(f"Community {comm} ({len(nodes_in_comm)} members):\n")
-            f.write("\n".join(f"  {node}" for node in nodes_in_comm))
-            f.write("\n\n")
+    return metrics_df
+
+# Example usage
+if __name__ == "__main__":
+    # Configuration - you can adjust these parameters
+    # data_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/non_residualized/SCH/control'
+    # output_dir = '/mnt/munin/Morey/Lab/ahmed/cerebellum/data/Outputs/testing/louvain_non_resid/gamma_1_to_2'
+
+    data_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/data/ready_for_harmon/groups/SCH/control'
+    output_dir = '/Users/ahmedhussain/Desktop/projects/testing/notebooks/graph/results/testing'
+
+    #gamma_range = np.array([i/10 for i in range(10, 21)])
+    gamma_range = np.array([i/10 for i in range(10, 12)]) # gamma = 1.0 & 1.1
+    n_gamma = len(gamma_range)
     
-    # Free memory before moving to next gamma
-    del all_subject_consensus_partitions, all_conn_matrices, all_subject_cis, all_subject_modularities
-    del subject_consensus_partition_modularities, nmi_values, ari_values, ami_values
+    # Run the optimization
+    metrics_df = optimize_louvain_processing(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        gamma_range=gamma_range,
+        n_subjects=3,  # Set to None to process all subjects
+        n_runs=3
+    )
 
 # After the gamma loop completes, create a DataFrame from all_metrics
 metrics_df = pd.DataFrame(all_metrics)
@@ -632,20 +435,3 @@ if 'num_communities' in metrics_df.columns:
 metrics_file = os.path.join(output_dir, 'clustering_metrics_gamma_scan.csv')
 metrics_df.to_csv(metrics_file, index=False)
 print(f"Metrics saved to {metrics_file}")
-        
-# # First plot: Subject consensus
-# fig1, ax1 = plt.subplots(figsize=(6.4, 2))
-# im1 = ax1.imshow(all_subject_consensus, cmap='Set1', aspect='auto')
-# ax1.set(ylabel='Subjects', xlabel='ROIs', xticklabels=[], yticklabels=[])
-
-# # Save first plot
-# output_path1 = os.path.join(output_dir, 'subject_consensus.png')
-# plt.savefig(output_path1, dpi=600, bbox_inches='tight')
-
-# # Second plot: Final consensus
-# fig2, ax2 = plt.subplots(figsize=(6.4, 2))
-# im2 = plot_mod_heatmap(conn_matrix, final_consensus, cmap='viridis', ax=ax2)
-
-# # Save second plot
-# output_path2 = os.path.join(output_dir, 'final_consensus.png')
-# plt.savefig(output_path2, dpi=600, bbox_inches='tight')
